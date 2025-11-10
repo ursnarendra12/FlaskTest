@@ -19,7 +19,7 @@ app.register_blueprint(user_blueprint, url_prefix = '/api/users')
 
 app.register_blueprint(license_blueprint, url_prefix = '/api/licenses')
 
-#My name is Narendra
+
 
 @app.route('/')
 def home():

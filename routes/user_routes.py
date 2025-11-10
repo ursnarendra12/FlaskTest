@@ -134,7 +134,7 @@ def delete_user(id):
     return jsonify({'message': 'User deleted successfully'})
 
 
-# PROFILE
+# PROFILE_ROUTE
 @user_blueprint.route('/profile', methods=['GET'])
 @token_required
 def get_profile():
