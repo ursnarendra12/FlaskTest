@@ -45,3 +45,19 @@ class LicenseUpdateValidation(Schema):
         existing = License.query.filter_by(license_key=value).first()
         if existing:
             raise ValidationError("This license key is already registered.")
+        
+class UpdateLicenseStatusValidation(Schema):
+    status = fields.Bool(
+        required=True,
+        error_messages={
+            "required": "Status is required.",
+        }
+    )
+
+class UpdateLicenseBlockValidation(Schema):
+    is_blocked = fields.Bool(
+        required=True,
+        error_messages={
+            "required": "Block is required.",
+        }
+    )

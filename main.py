@@ -3,8 +3,10 @@ from flask_cors import CORS
 from database import init_db, db
 from routes.user_routes import user_blueprint
 from routes.license_routes import license_blueprint
+from flask_migrate import Migrate
 from dotenv import load_dotenv
 import os
+
 
 load_dotenv()
 
@@ -14,6 +16,8 @@ CORS(app)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'my_secret_key')
 
 init_db(app)
+
+migrate = Migrate(app, db) 
 
 app.register_blueprint(user_blueprint, url_prefix = '/api/users')
 

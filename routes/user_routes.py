@@ -1,13 +1,16 @@
 from flask import Blueprint, request, jsonify, current_app
 from database import db
-from models import User
+from models import User, UserSession
 import bcrypt
 import jwt
-import datetime
+import uuid
+from datetime import datetime, timedelta
 from auth_middleware import token_required
 from validatators.user_validatator import UserCreateSchema, UserLoginValidation, UpdateUserValidation, UpdatePasswordValidation
 from utils.validate_request import validate_request
 from sqlalchemy import or_, func
+#from redis_client import redis_client
+import json
 
 user_blueprint = Blueprint('user', __name__)
 
@@ -28,7 +31,6 @@ def create_user():
     return jsonify({'id': user.id, 'message': 'User created successfully'}), 201
     
 
-
 # LOGIN (Generate JWT)
 @user_blueprint.route('/login', methods=['POST'])
 @validate_request(UserLoginValidation)
@@ -43,13 +45,95 @@ def login_user():
     if not user or not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
         return jsonify({'error': 'Invalid credentials'}), 401
 
+    # Generate JWT token
+    expiry_time = datetime.utcnow() + timedelta(hours=4)
     token = jwt.encode({
         'id': user.id,
         'email': user.email,
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=4)
+        'exp': expiry_time
     }, SECRET_KEY, algorithm='HS256')
 
-    return jsonify({'token': token})
+    # Convert token to string (for PostgreSQL Text column)
+    if isinstance(token, bytes):
+        token = token.decode('utf-8')
+    
+    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
+    user_agent = request.user_agent.string
+
+    # Create a session record
+    new_session = UserSession(
+        user_id=user.id,
+        token=token,
+        status=True,
+        expiry=expiry_time,
+        ip_address=ip_address,
+        user_agent=user_agent
+    )
+
+    db.session.add(new_session)
+    db.session.commit()
+
+    return jsonify({
+        'token': token,
+        'session_id': str(new_session.id),
+        'expiry': expiry_time.isoformat()
+    }), 200
+
+# Get all licenses for a user
+@user_blueprint.route('/<int:user_id>/licenses', methods=['GET'])
+@token_required
+def get_user_licenses(user_id):
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    # Access licenses from the relationship
+    licenses = [
+        {
+            'id': license.id,
+            'license_key': license.license_key,
+            'concurrent_session_count': license.concurrent_session_count,
+            'created_at': license.created_at.isoformat(),
+            'updated_at': license.updated_at.isoformat() if license.updated_at else None
+        }
+        for license in user.licenses
+    ]
+
+    return jsonify({
+        'user_id': user.id,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'licenses': licenses
+    }), 200
+
+# Get all sessions for a user
+@user_blueprint.route('/<int:user_id>/sessions', methods=['GET'])
+#@token_required
+def get_user_sessions(user_id):
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    # Access sessions from the relationship
+    sessions = [
+        {
+            'id': sessions.id,
+            'user_id': sessions.user.id,
+            'token': sessions.token,
+            'status': sessions.status,
+            'expiry': sessions.expiry.isoformat(),
+            'ip_address': sessions.ip_address,
+            'user_agent' : sessions.user_agent
+        }
+        for sessions in user.sessions
+    ]
+    return jsonify({
+        'user_id': user.id,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'sessions': sessions
+    }), 200
 
 # GET ALL USERS
 @user_blueprint.route('/', methods=['GET'])
@@ -138,8 +222,30 @@ def delete_user(id):
 @user_blueprint.route('/profile', methods=['GET'])
 @token_required
 def get_profile():
-    user = User.query.get_or_404(request.user_id)
-    return jsonify({col.name: getattr(user, col.name) for col in User.__table__.columns})
+    try:
+
+        #cache_key = f"user:{request.user_id}"
+
+        #cached_user = redis_client.get(cache_key)
+        #if cached_user:
+         #   return jsonify(json.loads(cached_user)), 200
+        
+        user = User.query.get_or_404(request.user_id)
+        user_data = {
+            col.name : getattr(user, col.name)
+            for col in User.__table__.columns
+            if col.name != 'password'
+        }
+        #redis_client.setex(cache_key, 300, json.dumps(user_data))
+        return jsonify(user_data), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+
+
+   # return jsonify({col.name: getattr(user, col.name) for col in User.__table__.columns})
 
 # CHANGE PASSWORD
 @user_blueprint.route('/change-password', methods=['PUT'])
