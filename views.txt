@@ -1,0 +1,9 @@
+CREATE OR REPLACE VIEW user_license_view AS
+SELECT 
+    users.*,
+    licenses.license_key,
+    licenses.concurrent_session_count,
+    licenses.status,
+    licenses.is_blocked
+FROM public.users
+JOIN public.licenses ON users.id = licenses.user_id;

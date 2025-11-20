@@ -17,8 +17,6 @@ class User(db.Model):
     city = db.Column(db.String(50), nullable=True) 
     state = db.Column(db.String(50), nullable=True)
     zipcode = db.Column(db.String(10), nullable=True)
-    license_key = db.Column(db.String(120), nullable=True)
-    concurrent_session_count = db.Column(db.String(120), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 

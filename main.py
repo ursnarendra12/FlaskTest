@@ -13,6 +13,7 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'my_secret_key')
 
 init_db(app)

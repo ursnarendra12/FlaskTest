@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, make_response
 from database import db
 from models import User, UserSession
 import bcrypt
@@ -11,6 +11,7 @@ from utils.validate_request import validate_request
 from sqlalchemy import or_, func
 #from redis_client import redis_client
 import json
+from flask_cors import cross_origin
 
 user_blueprint = Blueprint('user', __name__)
 
@@ -18,6 +19,10 @@ SECRET_KEY = "my_secret_key"
 
 # REGISTER (Create User)
 @user_blueprint.route('/', methods=['POST'])
+@cross_origin(
+    origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    supports_credentials=True
+)
 @validate_request(UserCreateSchema)
 def create_user():
     data = request.get_json()
@@ -33,6 +38,10 @@ def create_user():
 
 # LOGIN (Generate JWT)
 @user_blueprint.route('/login', methods=['POST'])
+@cross_origin(
+    origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    supports_credentials=True
+)
 @validate_request(UserLoginValidation)
 def login_user():
     data = request.get_json() or {}
@@ -42,42 +51,69 @@ def login_user():
         return jsonify({'error': 'Email and password required'}), 400
 
     user = User.query.filter_by(email=email).first()
+
     if not user or not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
         return jsonify({'error': 'Invalid credentials'}), 401
 
-    # Generate JWT token
-    expiry_time = datetime.utcnow() + timedelta(hours=4)
-    token = jwt.encode({
-        'id': user.id,
-        'email': user.email,
-        'exp': expiry_time
-    }, SECRET_KEY, algorithm='HS256')
-
-    # Convert token to string (for PostgreSQL Text column)
-    if isinstance(token, bytes):
-        token = token.decode('utf-8')
-    
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
-    user_agent = request.user_agent.string
-
-    # Create a session record
-    new_session = UserSession(
-        user_id=user.id,
-        token=token,
-        status=True,
-        expiry=expiry_time,
-        ip_address=ip_address,
-        user_agent=user_agent
+    # Generate JWT
+    expiry = datetime.utcnow() + timedelta(hours=1)
+    token = jwt.encode(
+        {"id": user.id, "email": user.email, "exp": expiry},
+        current_app.config["SECRET_KEY"],
+        algorithm="HS256"
     )
 
-    db.session.add(new_session)
+    # Create response
+    response = make_response(jsonify({"message": "Login successful"}))
+
+    # Set secure cookie
+    response.set_cookie(
+        "access_token",
+        token,
+        httponly=True,  
+        secure=False,   # set True in production with https
+        samesite="Lax",  
+        expires=expiry
+    )
+
+    return response
+
+#Logout User
+@user_blueprint.route('/logout', methods=['POST'])
+def logout_user():
+    # Try getting token from Authorization header or cookie
+    auth_header = request.headers.get('Authorization')
+    token = None
+
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    elif 'auth_token' in request.cookies:
+        token = request.cookies.get('auth_token')
+
+    if not token:
+        return jsonify({'error': 'Token missing'}), 401
+
+    try:
+        # Decode JWT to get user data
+        decoded_token = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+    except jwt.ExpiredSignatureError:
+        return jsonify({'error': 'Token already expired'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'error': 'Invalid token'}), 401
+
+    # Find session and deactivate
+    session = UserSession.query.filter_by(token=token, user_id=decoded_token['id'], status=True).first()
+    if not session:
+        return jsonify({'error': 'Active session not found'}), 404
+
+    session.status = False  # mark session inactive
     db.session.commit()
 
-    return jsonify({
-        'token': token,
-        'session_id': str(new_session.id),
-        'expiry': expiry_time.isoformat()
-    }), 200
+    # Create response and clear cookie if exists
+    response = make_response(jsonify({'message': 'Logout successful'}))
+    response.set_cookie('auth_token', '', expires=0)
+
+    return response, 200
 
 # Get all licenses for a user
 @user_blueprint.route('/<int:user_id>/licenses', methods=['GET'])
