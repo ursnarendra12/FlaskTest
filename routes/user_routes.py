@@ -8,9 +8,11 @@ from datetime import datetime, timedelta
 from auth_middleware import token_required
 from validatators.user_validatator import UserCreateSchema, UserLoginValidation, UpdateUserValidation, UpdatePasswordValidation
 from utils.validate_request import validate_request
-from sqlalchemy import or_, func
+from sqlalchemy import or_, func, asc, desc
 #from redis_client import redis_client
 import json
+import secrets
+from models import RefreshToken
 from flask_cors import cross_origin
 
 user_blueprint = Blueprint('user', __name__)
@@ -39,81 +41,206 @@ def create_user():
 # LOGIN (Generate JWT)
 @user_blueprint.route('/login', methods=['POST'])
 @cross_origin(
-    origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    origins=["http://localhost:5173"],
     supports_credentials=True
 )
 @validate_request(UserLoginValidation)
 def login_user():
     data = request.get_json() or {}
-    email, password = data.get('email'), data.get('password')
-
-    if not email or not password:
-        return jsonify({'error': 'Email and password required'}), 400
+    email, password = data.get("email"), data.get("password")
 
     user = User.query.filter_by(email=email).first()
+    if not user or not bcrypt.checkpw(password.encode(), user.password.encode()):
+        return jsonify({"error": "Invalid credentials"}), 401
 
-    if not user or not bcrypt.checkpw(password.encode('utf-8'), user.password.encode('utf-8')):
-        return jsonify({'error': 'Invalid credentials'}), 401
-
-    # Generate JWT
-    expiry = datetime.utcnow() + timedelta(hours=1)
-    token = jwt.encode(
-        {"id": user.id, "email": user.email, "exp": expiry},
+    # 1) Access token
+    access_exp = datetime.utcnow() + timedelta(minutes=60)
+    access_token = jwt.encode(
+        {"id": user.id, "email": user.email, "exp": access_exp},
         current_app.config["SECRET_KEY"],
         algorithm="HS256"
     )
 
-    # Create response
-    response = make_response(jsonify({"message": "Login successful"}))
+    # 2) Refresh token
+    refresh_exp = datetime.utcnow() + timedelta(days=15)
+    refresh_token = secrets.token_urlsafe(64)
 
-    # Set secure cookie
+    # Save refresh token in DB
+    new_refresh = RefreshToken(
+        token=refresh_token,
+        user_id=user.id,
+        expires=refresh_exp
+    )
+    db.session.add(new_refresh)
+    db.session.commit()
+
+    # -------------------------
+    # ADD USER DETAILS IN RESPONSE
+    # -------------------------
+    user_data = {
+        "id": user.id,
+        "first_name": getattr(user, "first_name", None),
+        "last_name": getattr(user, "last_name", None),
+        "email": user.email
+    }
+
+    response = make_response(jsonify({
+        "message": "Login successful",
+        "user": user_data
+    }))
+
+    # COOKIE: Access Token
     response.set_cookie(
         "access_token",
-        token,
-        httponly=True,  
-        secure=False,   # set True in production with https
-        samesite="Lax",  
-        expires=expiry
+        access_token,
+        httponly=True,
+        secure=False,              # OK for localhost, must be True in production (HTTPS)
+        samesite="None",           # IMPORTANT for cross-site cookies
+        expires=access_exp,
+        domain="localhost"         # ensures cookie works for 5173 → 5000
+    )
+
+    # COOKIE: Refresh Token
+    response.set_cookie(
+        "refresh_token",
+        refresh_token,
+        httponly=True,
+        secure=False,
+        samesite="None",
+        expires=refresh_exp,
+        domain="localhost"
+    )
+
+
+    return response
+
+#Create Auth Check
+@user_blueprint.route('/auth/check', methods=['GET'])
+def auth_check():
+    access_token = request.cookies.get("access_token")
+    print('Narendra')
+    print(access_token)
+
+    if not access_token:
+        return jsonify({"authenticated": False}), 401
+
+    try:
+        decoded = jwt.decode(
+            access_token,
+            current_app.config["SECRET_KEY"],
+            algorithms=["HS256"]
+        )
+        return jsonify({
+            "authenticated": True,
+            "user": {
+                "id": decoded["id"],
+                "email": decoded["email"]
+            }
+        }), 200
+
+    except jwt.ExpiredSignatureError:
+        return jsonify({"authenticated": False, "error": "token_expired"}), 401
+
+    except Exception:
+        return jsonify({"authenticated": False}), 401
+
+#REFRESH
+@user_blueprint.route('/refresh', methods=['POST'])
+def refresh_token():
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"error": "Refresh token missing"}), 401
+
+    # Check in DB
+    stored = RefreshToken.query.filter_by(token=refresh_token, revoked=False).first()
+    if not stored:
+        return jsonify({"error": "Invalid refresh token"}), 401
+    if stored.expires < datetime.utcnow():
+        return jsonify({"error": "Refresh token expired"}), 401
+
+    user = User.query.get(stored.user_id)
+
+    # Generate new access token
+    new_access_exp = datetime.utcnow() + timedelta(minutes=60)
+    new_access_token = jwt.encode(
+        {"id": user.id, "email": user.email, "exp": new_access_exp},
+        current_app.config["SECRET_KEY"],
+        algorithm="HS256"
+    )
+
+    # ROTATE refresh token (recommended)
+    new_refresh_token = secrets.token_urlsafe(64)
+    new_refresh_exp = datetime.utcnow() + timedelta(days=15)
+
+    # revoke old refresh token
+    stored.revoked = True
+
+    # save new one
+    fresh = RefreshToken(
+        token=new_refresh_token,
+        user_id=user.id,
+        expires=new_refresh_exp
+    )
+    db.session.add(fresh)
+    db.session.commit()
+
+    response = make_response(jsonify({"message": "Token refreshed"}))
+
+    response.set_cookie(
+        "access_token",
+        new_access_token,
+        httponly=True,
+        secure=False,
+        samesite="Lax",
+        expires=new_access_exp
+    )
+
+    response.set_cookie(
+        "refresh_token",
+        new_refresh_token,
+        httponly=True,
+        secure=False,
+        samesite="Lax",
+        expires=new_refresh_exp
     )
 
     return response
 
+#Dashboard
+@user_blueprint.route("/dashboard", methods=["GET"])
+def dashboard():
+    token = request.cookies.get("access_token")
+    if not token:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        # Fetch real stats from DB
+        return jsonify({
+            "collectedMTD": 1234.56,
+            "collectedYTD": 7890.12,
+            "progress1": 86,
+            "progress2": 45
+        })
+    except:
+        return jsonify({"error": "Unauthorized"}), 401
+
+
 #Logout User
 @user_blueprint.route('/logout', methods=['POST'])
 def logout_user():
-    # Try getting token from Authorization header or cookie
-    auth_header = request.headers.get('Authorization')
-    token = None
+    refresh_token = request.cookies.get("refresh_token")
 
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-    elif 'auth_token' in request.cookies:
-        token = request.cookies.get('auth_token')
+    if refresh_token:
+        stored = RefreshToken.query.filter_by(token=refresh_token).first()
+        if stored:
+            stored.revoked = True
+            db.session.commit()
 
-    if not token:
-        return jsonify({'error': 'Token missing'}), 401
+    response = make_response(jsonify({"message": "Logout successful"}))
+    response.set_cookie("access_token", "", expires=0)
+    response.set_cookie("refresh_token", "", expires=0)
 
-    try:
-        # Decode JWT to get user data
-        decoded_token = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
-    except jwt.ExpiredSignatureError:
-        return jsonify({'error': 'Token already expired'}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({'error': 'Invalid token'}), 401
-
-    # Find session and deactivate
-    session = UserSession.query.filter_by(token=token, user_id=decoded_token['id'], status=True).first()
-    if not session:
-        return jsonify({'error': 'Active session not found'}), 404
-
-    session.status = False  # mark session inactive
-    db.session.commit()
-
-    # Create response and clear cookie if exists
-    response = make_response(jsonify({'message': 'Logout successful'}))
-    response.set_cookie('auth_token', '', expires=0)
-
-    return response, 200
+    return response
 
 # Get all licenses for a user
 @user_blueprint.route('/<int:user_id>/licenses', methods=['GET'])
@@ -174,15 +301,18 @@ def get_user_sessions(user_id):
 # GET ALL USERS
 @user_blueprint.route('/', methods=['GET'])
 @token_required
+#@cross_origin(origins=["http://localhost:5173"], supports_credentials=True)
 def get_users():
     page = int(request.args.get('page', 1))
     limit = int(request.args.get('limit', 10))
     search = request.args.get('search', '').strip()
+    sort_field = request.args.get('sortField', 'id')
+    sort_order = int(request.args.get('sortOrder', -1))  # 1 for ASC, -1 for DESC
 
     query = User.query
 
+    # Search
     if search:
-        # Combine first_name and last_name for name-based search
         full_name = func.concat(User.first_name, ' ', User.last_name)
         query = query.filter(
             or_(
@@ -192,7 +322,19 @@ def get_users():
             )
         )
 
-    pagination = query.order_by(User.id.desc()).paginate(page=page, per_page=limit, error_out=False)
+    # Sorting
+    if hasattr(User, sort_field):
+        column_attr = getattr(User, sort_field)
+        if sort_order == 1:
+            query = query.order_by(asc(column_attr))
+        else:
+            query = query.order_by(desc(column_attr))
+    else:
+        # Default sort by id DESC
+        query = query.order_by(User.id.desc())
+
+    # Pagination
+    pagination = query.paginate(page=page, per_page=limit, error_out=False)
 
     users_data = [
         {
@@ -202,6 +344,7 @@ def get_users():
         }
         for user in pagination.items
     ]
+
     return jsonify({
         "data": users_data,
         "meta": {
@@ -211,7 +354,6 @@ def get_users():
             "pages": pagination.pages
         }
     })
-
 # GET SINGLE USER
 @user_blueprint.route('/<int:id>', methods=['GET'])
 @token_required
@@ -255,30 +397,17 @@ def delete_user(id):
 
 
 # PROFILE_ROUTE
-@user_blueprint.route('/profile', methods=['GET'])
-@token_required
-def get_profile():
+@user_blueprint.route("/profile", methods=["GET"])
+def profile():
+    token = request.cookies.get("access_token")
+    if not token:
+        return jsonify({"error": "Unauthorized"}), 401
+
     try:
-
-        #cache_key = f"user:{request.user_id}"
-
-        #cached_user = redis_client.get(cache_key)
-        #if cached_user:
-         #   return jsonify(json.loads(cached_user)), 200
-        
-        user = User.query.get_or_404(request.user_id)
-        user_data = {
-            col.name : getattr(user, col.name)
-            for col in User.__table__.columns
-            if col.name != 'password'
-        }
-        #redis_client.setex(cache_key, 300, json.dumps(user_data))
-        return jsonify(user_data), 200
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        return jsonify({"id": payload["id"], "email": payload["email"]})
+    except:
+        return jsonify({"error": "Unauthorized"}), 401
 
 
    # return jsonify({col.name: getattr(user, col.name) for col in User.__table__.columns})

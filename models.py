@@ -63,6 +63,15 @@ class UserSession(db.Model):
     user = db.relationship('User', back_populates='sessions')
 
 
+class RefreshToken(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(255), unique=True, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    expires = db.Column(db.DateTime, nullable=False)
+    revoked = db.Column(db.Boolean, default=False)
+
+
+
 
 """class User_License(db.Model):
     _tablename_ = 'user_license'
