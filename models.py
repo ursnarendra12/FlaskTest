@@ -23,8 +23,46 @@ class User(db.Model):
     license = db.relationship('License', back_populates='user', uselist=False, cascade='all, delete-orphan')
     sessions = db.relationship('UserSession', back_populates='user', cascade='all, delete-orphan')
 
-    
+class Contact(db.Model):
+    __tablename__ = 'contacts'
 
+    id = db.Column(db.Integer, primary_key=True)
+    first_name = db.Column(db.String(100), nullable=False)
+    last_name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    mobile_number = db.Column(db.String(20), unique=True, nullable=False)
+    address = db.Column(db.String(255), nullable=True)
+    landmark = db.Column(db.String(255), nullable=True)
+    city = db.Column(db.String(50), nullable=True) 
+    state = db.Column(db.String(50), nullable=True)
+    zipcode = db.Column(db.String(10), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Organization(db.Model):
+    __tablename__ = "organizations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    
+    # Organization Info
+    organization_name = db.Column(db.String(255), nullable=False)
+    address = db.Column(db.Text, nullable=False)
+    state = db.Column(db.String(100), nullable=False)
+    city = db.Column(db.String(100), nullable=False)
+    zipcode = db.Column(db.String(20), nullable=False)
+
+    # Contact Person Info
+    contact_first_name = db.Column(db.String(100), nullable=False)
+    contact_last_name = db.Column(db.String(100), nullable=False)
+    contact_email = db.Column(db.String(255), nullable=False)
+    contact_mobile = db.Column(db.String(20), nullable=False)
+
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
+    )
 
     
 

@@ -2,7 +2,9 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from database import init_db, db
 from routes.user_routes import user_blueprint
+from routes.organization_routes import organization_blueprint
 from routes.license_routes import license_blueprint
+from routes.contact_routes import contact_blueprint
 from flask_migrate import Migrate
 from dotenv import load_dotenv
 import os
@@ -14,12 +16,14 @@ app = Flask(__name__)
 # ---------------------------------------------------------
 # FIX: FULL CORS SUPPORT FOR COOKIES
 # ---------------------------------------------------------
-CORS(
-    app,
+CORS(app,
     supports_credentials=True,
-    origins=["http://localhost:5173"],
-    allow_headers=["Content-Type", "Authorization"],
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    resources={r"/api/*": {
+        "origins": [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173"
+        ]
+    }}
 )
 # ---------------------------------------------------------
 
@@ -29,8 +33,9 @@ init_db(app)
 migrate = Migrate(app, db)
 
 app.register_blueprint(user_blueprint, url_prefix='/api/users')
+app.register_blueprint(organization_blueprint, url_prefix="/api/organizations")
 app.register_blueprint(license_blueprint, url_prefix='/api/licenses')
-
+app.register_blueprint(contact_blueprint, url_prefix='/api/contacts')
 # ---------------------------------------------------------
 # FIX: FORCE HEADERS AFTER RESPONSE
 # ---------------------------------------------------------

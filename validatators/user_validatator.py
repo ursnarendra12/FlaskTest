@@ -35,6 +35,9 @@ class UserCreateSchema(Schema):
         validate=validate.Length(equal=10, error="Mobile number must be exactly 10 digits.")
     )
 
+    #organization = fields.Str(required=True, validate=validate.OneOf(["MedLawRCM", "JP Morgan Chase"]) )
+    #status = fields.Str(required=True, validate=validate.OneOf(["Active", "Inactive"]))
+
     @validates("email")
     def validate_unique_email(self, value, **kwargs):
         """Ensure email is unique."""
